@@ -7,5 +7,6 @@ pydantic
 joblib
 openpyxl
 langchain
+langchain-community
 langchain-huggingface
 huggingface-hub
