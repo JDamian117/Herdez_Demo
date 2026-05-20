@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+duckdb
+matplotlib
+pydantic
+joblib
+openpyxl
+langchain
+langchain-huggingface
+huggingface-hub
