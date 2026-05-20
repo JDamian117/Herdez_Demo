@@ -25,7 +25,7 @@ import streamlit as st
 from langchain_huggingface import HuggingFaceEndpoint
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
-from langchain_community.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferMemory
 
 # =============================================================================
 # CONFIGURACIÓN
