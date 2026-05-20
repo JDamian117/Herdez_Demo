@@ -21,11 +21,10 @@ import matplotlib.pyplot as plt
 from pydantic import BaseModel, Field
 import streamlit as st
 
-# LangChain + Hugging Face
+# LangChain + Hugging Face (solo lo necesario)
 from langchain_huggingface import HuggingFaceEndpoint
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
-from langchain.memory import ConversationBufferMemory
 
 # =============================================================================
 # CONFIGURACIÓN
@@ -37,9 +36,9 @@ XGB_MODEL_PATH = "modelo_xgboost_local.pkl"
 ENCODERS_PATH = "encoders.pkl"
 EXCEL_PATH = "data/Data_Prueba_Tecnica_Herdez_IA.xlsx"
 
-# Modelo gratuito de Hugging Face (rápido y bueno)
-HF_REPO_ID = "microsoft/Phi-3.5-mini-instruct"  # Alternativas: "google/gemma-2-2b-it", "Qwen/Qwen2.5-1.5B-Instruct"
-HF_TEMPERATURE = 0.1  # baja para el decisor
+# Modelo gratuito de Hugging Face
+HF_REPO_ID = "microsoft/Phi-3.5-mini-instruct"
+HF_TEMPERATURE = 0.1
 HF_MAX_TOKENS = 200
 
 # Obtener API key desde secrets de Streamlit (seguro)
@@ -165,7 +164,6 @@ def get_connection():
     return duckdb.connect(DUCKDB_PATH)
 
 def ensure_inventory_table():
-    """Crea la tabla inventario_raw desde el Excel si no existe."""
     if not os.path.exists(DUCKDB_PATH) and os.path.exists(EXCEL_PATH):
         conn = duckdb.connect(DUCKDB_PATH)
         df = pd.read_excel(EXCEL_PATH)
@@ -177,7 +175,6 @@ def ensure_inventory_table():
 # AGENTES DETERMINISTAS
 # =============================================================================
 def demand_forecast_tool(sku_id, cedi, fecha, clima) -> Dict[str, Any]:
-    """Pronóstico de demanda con XGBoost o fallback."""
     try:
         conn = get_connection()
         query = """
@@ -195,7 +192,6 @@ def demand_forecast_tool(sku_id, cedi, fecha, clima) -> Dict[str, Any]:
         if len(df_hist) < 7:
             baseline = df_hist["Ventas_Unidades"].tail(3).mean()
             return {"demanda_pronosticada_7d": baseline * 7, "confianza": 0.35, "metodo": "fallback_short"}
-        # Usar XGBoost si disponible
         model = MODELS.model
         encoders = MODELS.encoders
         if model and encoders:
@@ -229,7 +225,6 @@ def demand_forecast_tool(sku_id, cedi, fecha, clima) -> Dict[str, Any]:
         return {"demanda_pronosticada_7d": 700.0, "confianza": 0.0, "metodo": "error", "error": str(e)}
 
 def inventory_tool(sku_id, cedi_destino, unidades_necesarias) -> Dict[str, Any]:
-    """Encuentra el mejor CEDI origen."""
     try:
         conn = get_connection()
         query = """
@@ -256,7 +251,6 @@ def inventory_tool(sku_id, cedi_destino, unidades_necesarias) -> Dict[str, Any]:
                 "costo_transferencia_unidad": 0.0, "costo_transferencia_total": 0.0, "error": str(e)}
 
 def cost_tool(stock_actual, demanda, costo_quiebre_diario, costo_transferencia_unidad, unidades_necesarias) -> Dict[str, Any]:
-    """Calcula costos de quiebre y transferencia."""
     deficit = max(0, demanda - stock_actual)
     costo_quiebre = deficit * costo_quiebre_diario
     costo_transferencia = unidades_necesarias * costo_transferencia_unidad
@@ -270,7 +264,6 @@ def cost_tool(stock_actual, demanda, costo_quiebre_diario, costo_transferencia_u
 # DECISIONAGENT (LANGCHAIN + HUGGING FACE)
 # =============================================================================
 class DecisionAgent:
-    """Agente decisor con Hugging Face Inference API."""
     def __init__(self, repo_id=HF_REPO_ID, temperature=HF_TEMPERATURE):
         self.llm = HuggingFaceEndpoint(
             repo_id=repo_id,
@@ -278,7 +271,6 @@ class DecisionAgent:
             temperature=temperature,
         )
         self.parser = JsonOutputParser(pydantic_object=DecisionOutput)
-        # Prompt con los 5 patrones
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """
 # IDENTITY
@@ -338,7 +330,7 @@ Ejemplo sin déficit:
                 )
 
 # =============================================================================
-# CHATAGENT (MEMORIA CON LANGCHAIN)
+# CHATAGENT (SIN LANGCHAIN MEMORY, USA ST.SESSION_STATE)
 # =============================================================================
 class ChatAgent:
     def __init__(self, repo_id=HF_REPO_ID, temperature=0.35):
@@ -347,20 +339,20 @@ class ChatAgent:
             max_new_tokens=300,
             temperature=temperature,
         )
-        self.memory = ConversationBufferMemory(memory_key="history", return_messages=True)
-        self.prompt = ChatPromptTemplate.from_messages([
-            ("system", "Eres un asistente de cadena de suministro. Responde en español, de forma clara y útil."),
-            ("placeholder", "{history}"),
-            ("user", "{input}")
-        ])
-        self.chain = self.prompt | self.llm | StrOutputParser()
-
-    def answer(self, question: str, last_context: Dict[str, Any], session_id: str) -> str:
+    def answer(self, question: str, last_context: Dict[str, Any], history: List[Dict[str, str]]) -> str:
+        # Convertir historial a string (últimos 6 mensajes)
+        history_str = "\n".join([f"{m['role']}: {m['content']}" for m in history[-6:]])
         context_str = json.dumps({"question": question, "last_context": last_context}, ensure_ascii=False)
+        prompt = f"""Historial reciente de la conversación (role: user o assistant):
+{history_str}
+
+Contexto actual de la alerta (última decisión):
+{context_str}
+
+Responde en español, de forma clara y útil, usando el contexto si es relevante.
+"""
         try:
-            response = self.chain.invoke({"input": context_str, "history": self.memory.load_memory_variables({})["history"]})
-            self.memory.chat_memory.add_user_message(question)
-            self.memory.chat_memory.add_ai_message(response)
+            response = self.llm.invoke(prompt)
             return response
         except Exception as e:
             return f"Error en el chat: {e}"
@@ -551,7 +543,9 @@ def run_streamlit():
             st.session_state.messages.append({"role": "user", "content": user_input})
             if st.session_state.last_context:
                 chat_agent = ChatAgent()
-                reply = chat_agent.answer(user_input, st.session_state.last_context, st.session_state.session_id)
+                # Pasamos el historial de mensajes (sin el último, que es el usuario)
+                history = st.session_state.messages[:-1]
+                reply = chat_agent.answer(user_input, st.session_state.last_context, history)
             else:
                 reply = "Primero ejecuta una alerta para tener contexto."
             st.session_state.messages.append({"role": "assistant", "content": reply})
